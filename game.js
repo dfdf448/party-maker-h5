@@ -619,11 +619,21 @@
   function drawPlayer(cam) {
     const p = state.player;
     if (!p || p.dead) return;
-    const sx = p.x - cam - 13, sy = p.y - 16;
+    const sx = p.x - cam - 20, sy = p.y - 27;
     const img = !p.grounded ? images.jump : Math.abs(p.vx) > 30 ? images.run : images.idle;
     const bob = p.grounded && Math.abs(p.vx)>30 ? Math.sin(p.anim*15)*2 : 0;
-    drawDino(img, sx, sy+bob, 61, 68, p.face, p.invincible > 0 && Math.floor(p.invincible*12)%2 ? .35 : 1);
-    ctx.fillStyle = '#ffe326'; ctx.beginPath(); ctx.moveTo(sx+31,sy-8);ctx.lineTo(sx+20,sy-27);ctx.lineTo(sx+42,sy-27);ctx.closePath();ctx.fill();
+    drawDino(img, sx, sy+bob, 76, 84, p.face, p.invincible > 0 && Math.floor(p.invincible*12)%2 ? .35 : 1);
+    ctx.fillStyle = '#ffe326'; ctx.beginPath(); ctx.moveTo(sx+38,sy-8);ctx.lineTo(sx+26,sy-30);ctx.lineTo(sx+50,sy-30);ctx.closePath();ctx.fill();
+  }
+
+  function drawBuildAvatar() {
+    const bob = Math.sin(performance.now() * .003) * 3;
+    ctx.save();
+    ctx.fillStyle = 'rgba(13,40,48,.78)'; roundedRect(54,392,92,28,10); ctx.fill();
+    text('你的恐龙',100,406,12,'#fff');
+    drawDino(images.idle,52,426+bob,92,102,1,1);
+    ctx.fillStyle='#ffe326';ctx.beginPath();ctx.moveTo(98,423+bob);ctx.lineTo(84,399+bob);ctx.lineTo(112,399+bob);ctx.closePath();ctx.fill();
+    ctx.restore();
   }
 
   function drawBots(cam, now) {
@@ -705,6 +715,7 @@
   function drawBuild() {
     const cam = state.buildCameraX;
     drawWorld(cam, true, performance.now()*.001);
+    drawBuildAvatar();
     drawPlayerRail();
     drawBuildNavigator();
     drawBotBuildAction(cam);
