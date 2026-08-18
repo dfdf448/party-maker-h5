@@ -24,13 +24,36 @@
     respawnDelay: 0.72,
   };
 
+  function storageGet(key, fallback) {
+    try {
+      const value = window.localStorage && window.localStorage.getItem(key);
+      return value == null ? fallback : value;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+  function storageSet(key, value) {
+    try {
+      if (window.localStorage) window.localStorage.setItem(key, value);
+    } catch (_) {
+      /* Some in-app browsers disable storage. The game can run without it. */
+    }
+  }
+
+  const CHARACTERS = [
+    { id:'dino', name:'薄荷小龙', color:'#32c77a' },
+    { id:'pig', name:'珊瑚小猪', color:'#ff6574' },
+    { id:'mouse', name:'飞行小鼠', color:'#53bfe8' },
+    { id:'rabbit', name:'紫巾小兔', color:'#9a6bea' },
+  ];
+  const POSES = ['idle','run','jump','stunned'];
   const images = {};
-  const imageSources = {
-    idle: 'assets/dino-idle.png',
-    run: 'assets/dino-run.png',
-    jump: 'assets/dino-jump.png',
-    stunned: 'assets/dino-stunned.png',
-  };
+  const imageSources = {};
+  CHARACTERS.forEach(character => POSES.forEach(pose => {
+    const key = `${character.id}-${pose}`;
+    imageSources[key] = `assets/characters/${key}.png?v=20260818c`;
+  }));
 
   const PIECES = {
     platform: { name: '2×1平台', color: '#14c8ed', w: 92, h: 24 },
@@ -51,7 +74,7 @@
   ];
 
   const state = {
-    mode: 'build',
+    mode: 'menu',
     round: 1,
     score: 0,
     buildTime: CONFIG.buildSeconds,
@@ -70,14 +93,16 @@
     particles: [],
     toast: { text: '拖动一张机关卡牌到关卡里', time: 3.2 },
     lastTime: performance.now(),
-    soundOn: localStorage.getItem('party-maker-sound') === 'on',
+    soundOn: storageGet('party-maker-sound', 'off') === 'on',
     buildElapsed: 0,
     botClock: 0,
     botBuild: [],
     humanReady: false,
     startCountdown: 0,
     lastManualPan: -99,
-    highScore: Number(localStorage.getItem('party-maker-high-score') || 0),
+    highScore: Number(storageGet('party-maker-high-score', '0') || 0),
+    playerCount: clamp(Number(storageGet('party-maker-player-count', '4') || 4), 1, 4),
+    selectedCharacter: storageGet('party-maker-character', 'dino'),
     player: null,
     bots: [],
   };
@@ -91,19 +116,40 @@
     };
   }
 
+  function characterImage(characterId, pose = 'idle') {
+    return images[`${characterId}-${pose}`] || images['dino-idle'];
+  }
+
+  function selectedCharacterName() {
+    const character = CHARACTERS.find(item => item.id === state.selectedCharacter);
+    return character ? character.name : CHARACTERS[0].name;
+  }
+
   function resetBots() {
-    state.bots = [
-      { name: '团冬', color: '#ff4861', x: 60, speed: 87, seed: .4, finished: false },
-      { name: '肖亚兴', color: '#ffb51c', x: 44, speed: 73, seed: 1.8, finished: false },
-      { name: '伦敦', color: '#8f68ee', x: 28, speed: 65, seed: 3.2, finished: false },
-    ];
+    const names = ['团冬','肖亚兴','伦敦'];
+    const colors = ['#ff4861','#ffb51c','#8f68ee'];
+    const available = CHARACTERS.filter(character => character.id !== state.selectedCharacter);
+    state.bots = Array.from({ length: Math.max(0, state.playerCount - 1) }, (_, i) => ({
+      name:names[i], color:colors[i], charId:available[i % available.length].id,
+      x:60-i*16, speed:87-i*11, seed:.4+i*1.4, finished:false,
+    }));
   }
 
   function loadAssets() {
-    return Promise.all(Object.entries(imageSources).map(([key, src]) => new Promise(resolve => {
+    return Promise.all(Object.keys(imageSources).map(key => new Promise(resolve => {
+      const src = imageSources[key];
       const img = new Image();
-      img.onload = () => { images[key] = img; resolve(); };
-      img.onerror = resolve;
+      let finished = false;
+      const done = loaded => {
+        if (finished) return;
+        finished = true;
+        if (loaded) images[key] = img;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(() => done(false), 5000);
+      img.onload = () => done(true);
+      img.onerror = () => done(false);
       img.src = src;
     })));
   }
@@ -115,7 +161,21 @@
   }
   function roundedRect(x, y, w, h, r) {
     ctx.beginPath();
-    ctx.roundRect(x, y, w, h, r);
+    if (ctx.roundRect) {
+      ctx.roundRect(x, y, w, h, r);
+      return;
+    }
+    const radius = Math.min(r, w / 2, h / 2);
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
   }
   function text(t, x, y, size, color = '#fff', align = 'center', weight = 800) {
     ctx.save();
@@ -131,7 +191,7 @@
   function sound(kind) {
     if (!state.soundOn) return;
     try {
-      audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const now = audioCtx.currentTime;
       const profiles = {
         click:  { notes:[520], type:'sine',     length:.05, gain:.014 },
@@ -161,7 +221,7 @@
 
   function toggleSound() {
     state.soundOn = !state.soundOn;
-    localStorage.setItem('party-maker-sound', state.soundOn ? 'on' : 'off');
+    storageSet('party-maker-sound', state.soundOn ? 'on' : 'off');
     if (state.soundOn) sound('click');
     state.toast = { text: state.soundOn ? '柔和音效已开启' : '音效已关闭', time: 1.3 };
   }
@@ -170,6 +230,16 @@
     if (state.round === 1) return ['platform', 'spring', 'spikes'];
     if (state.round === 2) return ['moving', 'platform', 'spikes'];
     return ['spring', 'moving', 'platform'];
+  }
+
+  function pieceSize(type, rotation = 0) {
+    const spec = PIECES[type];
+    return rotation % 2 ? { w:spec.h, h:spec.w } : { w:spec.w, h:spec.h };
+  }
+
+  function createPiece(type, x, y, rotation = 0, extra = {}) {
+    const size = pieceSize(type, rotation);
+    return { type, x, y, w:size.w, h:size.h, rotation, ...extra };
   }
 
   function focusForRound() {
@@ -192,29 +262,46 @@
     state.pointerControls.clear();
   }
 
+  function startGame() {
+    storageSet('party-maker-player-count', String(state.playerCount));
+    storageSet('party-maker-character', state.selectedCharacter);
+    state.round = 1;
+    state.score = 0;
+    state.placed = [];
+    state.player = freshPlayer();
+    resetBots();
+    startBuild();
+    sound('click');
+  }
+
+  function showMenu() {
+    releaseAllControls();
+    state.mode = 'menu';
+    state.toast = { text:'', time:0 };
+    state.particles = [];
+  }
+
   function createBotPlans() {
     const layouts = {
       1: [
-        { type:'spring', x:430, y:440 },
-        { type:'spikes', x:545, y:544 },
-        { type:'platform', x:675, y:415 },
+        { type:'spring', x:430, y:440, rotation:0 },
+        { type:'spikes', x:545, y:544, rotation:0 },
+        { type:'platform', x:675, y:415, rotation:1 },
       ],
       2: [
-        { type:'moving', x:790, y:405 },
-        { type:'spikes', x:930, y:544 },
-        { type:'spring', x:1110, y:470 },
+        { type:'moving', x:790, y:405, rotation:1 },
+        { type:'spikes', x:930, y:500, rotation:3 },
+        { type:'spring', x:1110, y:470, rotation:0 },
       ],
       3: [
-        { type:'platform', x:1135, y:345 },
-        { type:'spring', x:1240, y:408 },
-        { type:'spikes', x:1400, y:374 },
+        { type:'platform', x:1135, y:345, rotation:1 },
+        { type:'spring', x:1240, y:408, rotation:3 },
+        { type:'spikes', x:1400, y:374, rotation:2 },
       ],
     };
-    const names = ['团冬','肖亚兴','伦敦'];
-    const colors = ['#ff4861','#ffb51c','#8f68ee'];
-    return layouts[state.round].map((p, i) => ({
-      ...p, name:names[i], color:colors[i], start:1.7 + i * 2.05,
-      duration:1.05, placed:false, index:i,
+    return layouts[state.round].slice(0, Math.max(0, state.playerCount - 1)).map((p, i) => ({
+      ...p, name:state.bots[i].name, color:state.bots[i].color, charId:state.bots[i].charId,
+      rotation:p.rotation||0, start:1.7 + i * 2.05, duration:1.05, placed:false, index:i,
     }));
   }
 
@@ -223,11 +310,12 @@
     if (!state.selected) {
       const type = inventory()[0];
       const spec = PIECES[type];
-      state.selected = { type, x: state.buildCameraX + 250, y: 430, w: spec.w, h: spec.h };
+      state.selected = { type, x: state.buildCameraX + 250, y: 430, w: spec.w, h: spec.h, rotation:0 };
       state.placed.push({ ...state.selected });
     }
     state.humanReady = true;
-    state.toast = { text: '已确认，等待另外三位玩家放置…', time: 2.2 };
+    const remaining = state.playerCount - 1;
+    state.toast = { text: remaining ? `已确认，等待另外${remaining}位玩家放置…` : '已确认，准备开跑！', time: 2.2 };
     sound('click');
   }
 
@@ -264,7 +352,7 @@
     if (state.round >= CONFIG.rounds) {
       state.mode = 'complete';
       state.highScore = Math.max(state.highScore, state.score);
-      localStorage.setItem('party-maker-high-score', String(state.highScore));
+      storageSet('party-maker-high-score', String(state.highScore));
       burst(W / 2, 280, '#ffda18', 60);
     } else {
       state.round += 1;
@@ -288,7 +376,7 @@
     p.respawn = CONFIG.respawnDelay;
     p.deaths += 1;
     p.vx = 0; p.vy = 0;
-    state.toast = { text: `小恐龙${reason}`, time: 1.4 };
+    state.toast = { text: `${selectedCharacterName()}${reason}`, time: 1.4 };
     burst(p.x - state.cameraX + p.w / 2, p.y + p.h / 2, '#ff4b55', 18);
     sound('hurt');
   }
@@ -305,7 +393,8 @@
       if (piece.type === 'platform') all.push({ ...piece, orange: false });
       if (piece.type === 'moving') {
         const offset = animateMoving ? Math.sin(time * 1.7 + (piece.phase || 0)) * 54 : 0;
-        all.push({ ...piece, y: piece.y + offset, moving: true, animateMoving });
+        const horizontal = (piece.rotation || 0) % 2 === 1;
+        all.push({ ...piece, x:piece.x+(horizontal?offset:0), y:piece.y+(horizontal?0:offset), moving: true, animateMoving });
       }
     }
     return all;
@@ -326,20 +415,21 @@
   function queueJump() { jumpBuffer = .14; }
 
   function placeBotPlan(plan) {
-    const spec = PIECES[plan.type];
+    const size = pieceSize(plan.type, plan.rotation || 0);
     const candidates = [
       { x:plan.x, y:plan.y },
       { x:plan.x + 42, y:plan.y - 70 },
       { x:plan.x - 56, y:plan.y - 90 },
     ];
     const target = candidates.find(c => !state.placed.some(p => rects(
-      { x:c.x-10, y:c.y-10, w:spec.w+20, h:spec.h+20 }, p
+      { x:c.x-10, y:c.y-10, w:size.w+20, h:size.h+20 }, p
     ))) || candidates[1];
-    plan.x = target.x; plan.y = target.y; plan.placed = true;
-    state.placed.push({ type:plan.type, x:plan.x, y:plan.y, w:spec.w, h:spec.h,
-      phase:plan.index*1.7, bot:true, botName:plan.name, botColor:plan.color });
-    state.toast = { text:`${plan.name} 放置了「${spec.name}」`, time:1.35 };
-    burst(plan.x - state.buildCameraX + spec.w/2, plan.y + spec.h/2, plan.color, 11);
+    plan.x = clamp(target.x,260,WORLD_W-180-size.w); plan.y = clamp(target.y,135,590-size.h); plan.placed = true;
+    state.placed.push(createPiece(plan.type, plan.x, plan.y, plan.rotation || 0, {
+      phase:plan.index*1.7, bot:true, botName:plan.name, botColor:plan.color
+    }));
+    state.toast = { text:`${plan.name} 放置了「${PIECES[plan.type].name}」`, time:1.35 };
+    burst(plan.x - state.buildCameraX + size.w/2, plan.y + size.h/2, plan.color, 11);
     sound('place');
   }
 
@@ -370,7 +460,7 @@
     }
 
     if (state.buildTime <= 0 && !state.humanReady) startRace();
-    const everyoneReady = state.botBuild.length && state.botBuild.every(p => p.placed);
+    const everyoneReady = state.botBuild.every(p => p.placed);
     if (state.humanReady && everyoneReady) {
       if (state.startCountdown <= 0) state.startCountdown = 1.05;
       state.startCountdown -= dt;
@@ -440,8 +530,11 @@
         death('撞上了地刺！');
       }
       if (piece.type === 'spring' && p.vy >= 0 && rects(p, { x: piece.x, y: piece.y, w: piece.w, h: piece.h })) {
-        p.y = piece.y - p.h;
-        p.vy = -720;
+        const rotation = piece.rotation || 0;
+        if (rotation === 0) { p.y = piece.y - p.h; p.vy = -720; }
+        else if (rotation === 1) { p.x = piece.x + piece.w + 2; p.vx = 720; p.vy = -160; }
+        else if (rotation === 2) { p.y = piece.y + piece.h + 2; p.vy = 620; }
+        else { p.x = piece.x - p.w - 2; p.vx = -720; p.vy = -160; }
         p.grounded = false;
         burst(p.x - state.cameraX + p.w / 2, p.y + p.h, '#ffdc22', 12);
         sound('spring');
@@ -547,9 +640,11 @@
     if (p.castle) return drawCastle(x, y, p.w, p.h);
     ctx.save();
     if (p.moving) {
+      const rotation=p.rotation||0, cx=x+p.w/2, cy=y+p.h/2;
+      const anchors=[[35,-120],[120,35],[-35,120],[-120,-35]][rotation];
       ctx.strokeStyle = '#5b5960'; ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.moveTo(x + p.w/2, y); ctx.lineTo(x + p.w/2 + 35, y - 120); ctx.stroke();
-      ctx.fillStyle = '#ef4a4f'; ctx.fillRect(x+p.w/2+31,y-124,8,8);
+      ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+anchors[0],cy+anchors[1]); ctx.stroke();
+      ctx.fillStyle = '#ef4a4f'; ctx.fillRect(cx+anchors[0]-4,cy+anchors[1]-4,8,8);
     }
     ctx.fillStyle = p.orange ? '#ff9d1c' : '#92999a';
     roundedRect(x, y, p.w, p.h, 7); ctx.fill();
@@ -558,27 +653,39 @@
     ctx.restore();
   }
 
-  function drawPiece(piece, cam, alpha = 1) {
-    const x = piece.x - cam, y = piece.y;
-    const spec = PIECES[piece.type];
-    ctx.save(); ctx.globalAlpha = alpha;
-    if (piece.type === 'platform') {
-      ctx.fillStyle = '#92999a'; roundedRect(x,y,piece.w,piece.h,7); ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,.25)'; roundedRect(x+5,y+4,piece.w-10,5,3); ctx.fill();
-    } else if (piece.type === 'spikes') {
-      ctx.fillStyle = '#5a5d63'; ctx.fillRect(x,y+piece.h-7,piece.w,7);
+  function drawPieceShape(type,x,y,w,h) {
+    if (type === 'platform') {
+      ctx.fillStyle = '#92999a'; roundedRect(x,y,w,h,7); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,.25)'; roundedRect(x+5,y+4,w-10,5,3); ctx.fill();
+    } else if (type === 'spikes') {
+      ctx.fillStyle = '#5a5d63'; ctx.fillRect(x,y+h-7,w,7);
       ctx.fillStyle = '#e8edf0';
-      const n = 5, sw = piece.w / n;
-      for (let i=0;i<n;i++) { ctx.beginPath(); ctx.moveTo(x+i*sw,y+piece.h-7); ctx.lineTo(x+i*sw+sw/2,y); ctx.lineTo(x+(i+1)*sw,y+piece.h-7); ctx.fill(); }
-    } else if (piece.type === 'spring') {
-      ctx.fillStyle = '#ffd41b'; ctx.fillRect(x,y,piece.w,6); ctx.fillRect(x,y+piece.h-6,piece.w,6);
+      const n = 5, sw = w / n;
+      for (let i=0;i<n;i++) { ctx.beginPath(); ctx.moveTo(x+i*sw,y+h-7); ctx.lineTo(x+i*sw+sw/2,y); ctx.lineTo(x+(i+1)*sw,y+h-7); ctx.fill(); }
+    } else if (type === 'spring') {
+      ctx.fillStyle = '#ffd41b'; ctx.fillRect(x,y,w,6); ctx.fillRect(x,y+h-6,w,6);
       ctx.strokeStyle = '#b83262'; ctx.lineWidth = 4; ctx.beginPath();
-      ctx.moveTo(x+7,y+7); ctx.lineTo(x+piece.w-7,y+13); ctx.lineTo(x+7,y+20); ctx.lineTo(x+piece.w-7,y+29); ctx.stroke();
-    } else if (piece.type === 'moving') {
-      const py = y + (state.mode === 'race' ? Math.sin(performance.now()*.0017 + (piece.phase||0))*54 : 0);
-      ctx.strokeStyle='#5b5960';ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(x+piece.w/2,py);ctx.lineTo(x+piece.w/2+35,py-120);ctx.stroke();
-      ctx.fillStyle='#ff9d1c';roundedRect(x,py,piece.w,piece.h,7);ctx.fill();
+      ctx.moveTo(x+7,y+7); ctx.lineTo(x+w-7,y+13); ctx.lineTo(x+7,y+20); ctx.lineTo(x+w-7,y+h-7); ctx.stroke();
+    } else if (type === 'moving') {
+      ctx.fillStyle='#ff9d1c';roundedRect(x,y,w,h,7);ctx.fill();
+      ctx.fillStyle='rgba(255,255,255,.28)';roundedRect(x+5,y+4,w-10,5,3);ctx.fill();
     }
+  }
+
+  function drawPiece(piece, cam, alpha = 1) {
+    let x = piece.x - cam, y = piece.y;
+    const spec = PIECES[piece.type];
+    const rotation=piece.rotation||0;
+    const natural=pieceSize(piece.type,rotation);
+    const scale=Math.min(piece.w/natural.w,piece.h/natural.h);
+    if(piece.type==='moving'&&state.mode==='race'){
+      const offset=Math.sin(performance.now()*.0017+(piece.phase||0))*54;
+      if(rotation%2)x+=offset;else y+=offset;
+    }
+    ctx.save(); ctx.globalAlpha = alpha;
+    ctx.translate(x+piece.w/2,y+piece.h/2);ctx.rotate(rotation*Math.PI/2);
+    drawPieceShape(piece.type,-spec.w*scale/2,-spec.h*scale/2,spec.w*scale,spec.h*scale);
+    ctx.restore();ctx.save();ctx.globalAlpha=alpha;
     if (piece.bot) {
       ctx.fillStyle = piece.botColor || 'rgba(255,66,92,.9)'; roundedRect(x+piece.w-16,y-11,26,20,6);ctx.fill();
       text((piece.botName || '机').slice(0,1),x+piece.w-3,y-1,11,'#fff');
@@ -620,7 +727,8 @@
     const p = state.player;
     if (!p || p.dead) return;
     const sx = p.x - cam - 20, sy = p.y - 27;
-    const img = !p.grounded ? images.jump : Math.abs(p.vx) > 30 ? images.run : images.idle;
+    const pose = !p.grounded ? 'jump' : Math.abs(p.vx) > 30 ? 'run' : 'idle';
+    const img = characterImage(state.selectedCharacter,pose);
     const bob = p.grounded && Math.abs(p.vx)>30 ? Math.sin(p.anim*15)*2 : 0;
     drawDino(img, sx, sy+bob, 76, 84, p.face, p.invincible > 0 && Math.floor(p.invincible*12)%2 ? .35 : 1);
     ctx.fillStyle = '#ffe326'; ctx.beginPath(); ctx.moveTo(sx+38,sy-8);ctx.lineTo(sx+26,sy-30);ctx.lineTo(sx+50,sy-30);ctx.closePath();ctx.fill();
@@ -630,8 +738,8 @@
     const bob = Math.sin(performance.now() * .003) * 3;
     ctx.save();
     ctx.fillStyle = 'rgba(13,40,48,.78)'; roundedRect(54,392,92,28,10); ctx.fill();
-    text('你的恐龙',100,406,12,'#fff');
-    drawDino(images.idle,52,426+bob,92,102,1,1);
+    text(selectedCharacterName(),100,406,12,'#fff');
+    drawDino(characterImage(state.selectedCharacter,'idle'),52,426+bob,92,102,1,1);
     ctx.fillStyle='#ffe326';ctx.beginPath();ctx.moveTo(98,423+bob);ctx.lineTo(84,399+bob);ctx.lineTo(112,399+bob);ctx.closePath();ctx.fill();
     ctx.restore();
   }
@@ -643,9 +751,9 @@
       if (x < -70 || x > W+70) continue;
       const ground = bot.x < 255 ? 535 : bot.x < 475 ? 505 : bot.x < 660 ? 570 : bot.x < 875 ? 510 : bot.x < 1055 ? 570 : bot.x < 1320 ? 490 : 400;
       const hop = Math.max(0, Math.sin(now*2.6 + bot.seed))*42;
-      ctx.save(); ctx.globalAlpha=.64; ctx.fillStyle=bot.color; roundedRect(x-3,ground-57-hop,42,42,10);ctx.fill();
-      drawDino(images.run,x-6,ground-65-hop,48,54,1,.75);
-      ctx.strokeStyle=bot.color;ctx.lineWidth=3;roundedRect(x-4,ground-59-hop,44,44,10);ctx.stroke();ctx.restore();
+      ctx.save();ctx.globalAlpha=.88;
+      drawDino(characterImage(bot.charId,'run'),x-20,ground-84-hop,76,84,1,1);
+      ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=4;text(bot.name,x+18,ground-92-hop,10,bot.color);ctx.restore();
     }
   }
 
@@ -666,20 +774,19 @@
   }
 
   function drawPlayerRail() {
-    const colors=['#31c871','#ff4861','#ffb51c','#8f68ee'];
-    for(let i=0;i<4;i++) {
+    const participants=[{charId:state.selectedCharacter,color:'#31c871'},...state.bots];
+    for(let i=0;i<participants.length;i++) {
+      const participant=participants[i];
       const y=92+i*37;
-      ctx.fillStyle='rgba(12,41,52,.72)';roundedRect(8,y,39,31,7);ctx.fill();
-      ctx.strokeStyle=colors[i];ctx.lineWidth=3;roundedRect(8,y,39,31,7);ctx.stroke();
-      if(i===0) drawDino(images.idle,11,y+2,28,28,1); else {ctx.fillStyle=colors[i];ctx.beginPath();ctx.arc(27,y+14,8,0,Math.PI*2);ctx.fill();}
+      drawDino(characterImage(participant.charId,'idle'),7,y-2,38,38,1);
       let badge='…', badgeColor='#ff3c52';
       if(i===0&&state.mode==='build'&&state.humanReady){badge='✓';badgeColor='#25c94c';}
       if(i>0&&state.mode==='build'){
         const plan=state.botBuild[i-1];
-        if(plan?.placed){badge='✓';badgeColor='#25c94c';}
+        if(plan && plan.placed){badge='✓';badgeColor='#25c94c';}
         else if(plan&&state.botClock>=plan.start){badge='手';badgeColor=plan.color;}
       }
-      ctx.fillStyle=badgeColor;roundedRect(35,y+18,18,15,4);ctx.fill();text(badge,44,y+25,9,'#fff');
+      ctx.fillStyle=badgeColor;ctx.beginPath();ctx.arc(43,y+25,9,0,Math.PI*2);ctx.fill();text(badge,43,y+25,9,'#fff');
     }
   }
 
@@ -701,12 +808,12 @@
   function drawBotBuildAction(cam) {
     const active=state.botBuild.find(p=>!p.placed&&state.botClock>=p.start&&state.botClock<p.start+p.duration);
     if(!active)return;
-    const spec=PIECES[active.type];
+    const spec=PIECES[active.type],size=pieceSize(active.type,active.rotation||0);
     const raw=clamp((state.botClock-active.start)/active.duration,0,1);
     const t=raw*raw*(3-2*raw);
-    const targetX=active.x-cam+spec.w/2;
-    const sx=lerp(42,targetX,t), sy=lerp(152+active.index*37,active.y+spec.h/2,t);
-    drawPiece({type:active.type,x:sx+cam-spec.w/2,y:sy-spec.h/2,w:spec.w,h:spec.h,phase:active.index},cam,.86);
+    const targetX=active.x-cam+size.w/2;
+    const sx=lerp(42,targetX,t), sy=lerp(152+active.index*37,active.y+size.h/2,t);
+    drawPiece(createPiece(active.type,sx+cam-size.w/2,sy-size.h/2,active.rotation||0,{phase:active.index}),cam,.86);
     ctx.save();ctx.fillStyle='rgba(12,42,53,.9)';roundedRect(98,132,298,39,10);ctx.fill();
     ctx.fillStyle=active.color;ctx.beginPath();ctx.arc(118,151,9,0,Math.PI*2);ctx.fill();
     text(`${active.name} 正在拖动「${spec.name}」`,137,152,13,'#fff','left');ctx.restore();
@@ -723,13 +830,15 @@
     if (state.selected) {
       drawPiece(state.selected, cam, .9);
       ctx.strokeStyle='#6aff8e';ctx.lineWidth=3;ctx.setLineDash([8,5]);roundedRect(state.selected.x-cam-5,state.selected.y-5,state.selected.w+10,state.selected.h+10,8);ctx.stroke();ctx.setLineDash([]);
+      ctx.fillStyle=state.humanReady?'#66777c':'#ffad13';roundedRect(211,72,49,46,8);ctx.fill();ctx.strokeStyle=state.humanReady?'#43545a':'#b96e08';ctx.lineWidth=3;ctx.stroke();
+      text('↻',235,94,28,'#fff');
       ctx.fillStyle=state.humanReady?'#66777c':'#24c643';roundedRect(270,72,125,46,8);ctx.fill();ctx.strokeStyle=state.humanReady?'#43545a':'#0d7f25';ctx.lineWidth=3;ctx.stroke();
       text(state.humanReady?'等待中…':'✓ 确定',333,95,state.humanReady?16:20);
     }
 
     if (state.dragging) {
       const spec=PIECES[state.dragging.type];
-      drawPiece({type:state.dragging.type,x:state.dragging.x+cam-spec.w/2,y:state.dragging.y-spec.h/2,w:spec.w,h:spec.h},cam,.72);
+      drawPiece(createPiece(state.dragging.type,state.dragging.x+cam-spec.w/2,state.dragging.y-spec.h/2,0),cam,.72);
     }
 
     ctx.fillStyle='rgba(33,52,64,.92)';ctx.fillRect(0,615,W,145);
@@ -744,7 +853,7 @@
     ctx.save();
     ctx.fillStyle=spec.color;roundedRect(x,y,w,h,8);ctx.fill();
     ctx.fillStyle='rgba(255,255,255,.2)';roundedRect(x+5,y+5,w-10,24,6);ctx.fill();
-    const mini={type,x:x+40,y:y+28,w:Math.min(spec.w*.5,58),h:Math.min(spec.h*.7,28)};
+    const mini={type,x:x+40,y:y+28,w:Math.min(spec.w*.5,58),h:Math.min(spec.h*.7,28),rotation:0};
     drawPiece(mini,0);
     ctx.fillStyle='rgba(12,34,45,.82)';roundedRect(x+30,y+h-30,w-30,30,0);ctx.fill();
     text(spec.name,x+w-8,y+h-15,14,'#fff','right');
@@ -794,10 +903,41 @@
     text(state.round<CONFIG.rounds?'准备进入下一轮建造…':'正在统计最终得分…',W/2,401,14,'#62757d');
   }
 
+  function drawMenu() {
+    drawSky(false);
+    ctx.fillStyle='rgba(11,38,50,.9)';roundedRect(24,28,372,108,22);ctx.fill();
+    text('派对制造',W/2,67,35,'#ffe021');
+    text('制造机关 · 冲向终点',W/2,109,14,'#c9f4f2');
+    ctx.fillStyle='rgba(255,255,255,.92)';roundedRect(16,154,388,190,18);ctx.fill();
+    text('选择你的角色',W/2,174,16,'#183b49');
+    CHARACTERS.forEach((character,i)=>{
+      const x=20+i*98,selected=state.selectedCharacter===character.id;
+      ctx.fillStyle=selected?'#e8fff2':'#e9f1f3';roundedRect(x,190,88,138,13);ctx.fill();
+      if(selected){ctx.strokeStyle='#22c55e';ctx.lineWidth=4;roundedRect(x,190,88,138,13);ctx.stroke();}
+      drawDino(characterImage(character.id,'idle'),x+6,200,76,86,1);
+      text(character.name,x+44,300,11,'#163643');
+      if(selected){ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(x+74,204,10,0,Math.PI*2);ctx.fill();text('✓',x+74,204,10,'#fff');}
+    });
+    ctx.fillStyle='rgba(11,38,50,.86)';roundedRect(28,366,364,128,18);ctx.fill();
+    text('选择参赛人数',W/2,389,17,'#fff');
+    for(let count=1;count<=4;count++){
+      const x=36+(count-1)*88,selected=state.playerCount===count;
+      ctx.fillStyle=selected?'#ffe021':'rgba(255,255,255,.16)';roundedRect(x,414,70,54,12);ctx.fill();
+      text(`${count}人`,x+35,441,18,selected?'#173744':'#fff');
+    }
+    const botCount=Math.max(0,state.playerCount-1);
+    text(botCount?`你 + ${botCount}名不同角色的人机`:'单人练习模式',W/2,482,12,'#bde8ea');
+    ctx.fillStyle='#23c94d';roundedRect(60,544,300,72,15);ctx.fill();ctx.strokeStyle='#0b7f28';ctx.lineWidth=4;ctx.stroke();
+    text('开始制造',W/2,580,25,'#fff');
+    text(`最高纪录  ★ ${state.highScore}`,W/2,652,14,'#173744');
+    ctx.fillStyle='rgba(8,29,38,.75)';roundedRect(W-70,12,58,37,12);ctx.fill();
+    text(state.soundOn?'声':'静',W-41,31,13,'#fff');
+  }
+
   function drawComplete() {
     drawSky(false);
     drawCastle(34,395,352,365);
-    drawDino(images.idle,125,210,170,190,1);
+    drawDino(characterImage(state.selectedCharacter,'idle'),125,210,170,190,1);
     ctx.fillStyle='rgba(13,40,48,.92)';roundedRect(34,40,352,152,22);ctx.fill();
     text('派对完成！',W/2,79,32,'#ffe021');text(`总得分  ${state.score}`,W/2,127,25);text(`最高纪录  ${state.highScore}`,W/2,163,14,'#b8e8ec');
     ctx.fillStyle='#24c643';roundedRect(78,620,264,66,12);ctx.fill();ctx.strokeStyle='#0b7c25';ctx.lineWidth=4;ctx.stroke();text('再玩一局',W/2,653,24);
@@ -805,11 +945,12 @@
 
   function draw() {
     ctx.clearRect(0,0,W,H);
-    if(state.mode==='build') drawBuild();
+    if(state.mode==='menu') drawMenu();
+    else if(state.mode==='build') drawBuild();
     else if(state.mode==='race') drawRace();
     else if(state.mode==='result') drawResult();
     else drawComplete();
-    drawParticles(); drawToast();
+    drawParticles(); if(state.mode!=='menu')drawToast();
   }
 
   function pointFromEvent(e) {
@@ -823,27 +964,41 @@
     return i>=0&&i<3?inventory()[i]:null;
   }
 
-  function validPlacement(type,x,y) {
-    const spec=PIECES[type];
-    if(y<135||y+spec.h>600) return false;
-    const wx=x+state.buildCameraX-spec.w/2;
-    if(wx<260||wx+spec.w>WORLD_W-180) return false;
-    return !state.placed.some(p=>rects({x:wx-12,y:y-spec.h/2-12,w:spec.w+24,h:spec.h+24},p));
+  function validPiece(piece,ignore=null) {
+    if(piece.y<135||piece.y+piece.h>600)return false;
+    if(piece.x<260||piece.x+piece.w>WORLD_W-180)return false;
+    return !state.placed.some(other=>other!==ignore&&rects({x:piece.x-12,y:piece.y-12,w:piece.w+24,h:piece.h+24},other));
   }
 
   function commitPlacement(type,x,y) {
     const spec=PIECES[type];
-    if(!validPlacement(type,x,y)){state.toast={text:'这里放不下，换个空位试试',time:1.6};sound('hurt');return false;}
-    const placed={type,x:Math.round((x+state.buildCameraX-spec.w/2)/14)*14,y:Math.round((y-spec.h/2)/14)*14,w:spec.w,h:spec.h,phase:Math.random()*3};
+    const placed=createPiece(type,Math.round((x+state.buildCameraX-spec.w/2)/14)*14,Math.round((y-spec.h/2)/14)*14,0,{phase:Math.random()*3});
+    if(!validPiece(placed,state.selected)){state.toast={text:'这里放不下，换个空位试试',time:1.6};sound('hurt');return false;}
     if(state.selected){const idx=state.placed.indexOf(state.selected);if(idx>=0)state.placed.splice(idx,1);}
-    state.placed.push(placed);state.selected=placed;state.toast={text:`已放置「${spec.name}」，点击确定开跑`,time:2};sound('place');return true;
+    state.placed.push(placed);state.selected=placed;state.toast={text:`已放置「${spec.name}」，可旋转后再确定`,time:2};sound('place');return true;
+  }
+
+  function rotateSelected() {
+    if(!state.selected||state.humanReady)return false;
+    const current=state.selected,next=(current.rotation+1)%4,size=pieceSize(current.type,next);
+    const cx=current.x+current.w/2,cy=current.y+current.h/2;
+    const rotated=createPiece(current.type,Math.round((cx-size.w/2)/7)*7,Math.round((cy-size.h/2)/7)*7,next,{phase:current.phase});
+    if(!validPiece(rotated,current)){state.toast={text:'旋转后会碰到其他机关',time:1.5};sound('hurt');return false;}
+    const idx=state.placed.indexOf(current);if(idx>=0)state.placed[idx]=rotated;
+    state.selected=rotated;state.toast={text:`已旋转 ${next*90}°`,time:1.2};sound('click');return true;
   }
 
   function pointerDown(e) {
-    canvas.setPointerCapture?.(e.pointerId); canvas.focus();
+    if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId); canvas.focus();
     const p=pointFromEvent(e);
-    if(state.mode==='build'){
+    if(state.mode==='menu'){
       if(p.x>=W-70&&p.y<=55){toggleSound();return;}
+      if(p.y>=188&&p.y<=332){const i=Math.floor((p.x-16)/98);if(i>=0&&i<CHARACTERS.length){state.selectedCharacter=CHARACTERS[i].id;resetBots();sound('click');return;}}
+      if(p.y>=408&&p.y<=474){const count=Math.floor((p.x-30)/88)+1;if(count>=1&&count<=4){state.playerCount=count;resetBots();sound('click');return;}}
+      if(p.x>=55&&p.x<=365&&p.y>=535&&p.y<=625){startGame();return;}
+    } else if(state.mode==='build'){
+      if(p.x>=W-70&&p.y<=55){toggleSound();return;}
+      if(!state.humanReady&&state.selected&&p.x>=207&&p.x<=264&&p.y>=68&&p.y<=122){rotateSelected();return;}
       if(!state.humanReady&&state.selected&&p.x>=270&&p.x<=395&&p.y>=72&&p.y<=118){startRace();return;}
       if(p.y>=270&&p.y<=388&&p.x<=52){state.pointerControls.set(e.pointerId,'panLeft');state.lastManualPan=performance.now()/1000;return;}
       if(p.y>=270&&p.y<=388&&p.x>=W-52){state.pointerControls.set(e.pointerId,'panRight');state.lastManualPan=performance.now()/1000;return;}
@@ -855,7 +1010,7 @@
       let control=null;
       if(p.y>=625&&p.x<95)control='left'; else if(p.y>=625&&p.x<195)control='right'; else if(p.y>=615&&p.x>292)control='jump';
       if(control){state.pointerControls.set(e.pointerId,control);if(control==='jump')queueJump();}
-    } else if(state.mode==='complete'&&p.x>=78&&p.x<=342&&p.y>=610&&p.y<=700){restart();sound('click');}
+    } else if(state.mode==='complete'&&p.x>=78&&p.x<=342&&p.y>=610&&p.y<=700){showMenu();sound('click');}
   }
 
   function pointerMove(e) {
@@ -898,6 +1053,7 @@
     if(['ArrowLeft','ArrowRight','ArrowUp','Space','KeyA','KeyD','KeyW','KeyR'].includes(e.code))e.preventDefault();
     if(!state.keys.has(e.code)&&(e.code==='ArrowUp'||e.code==='Space'||e.code==='KeyW'))queueJump();
     if(e.code==='KeyR'&&state.mode==='race')death('选择了快速重生');
+    if(e.code==='Enter'&&state.mode==='menu')startGame();
     state.keys.add(e.code);
   });
   window.addEventListener('keyup',e=>state.keys.delete(e.code));
@@ -912,14 +1068,17 @@
   window.__partyGame = {
     getState: () => ({mode:state.mode,round:state.round,score:state.score,placed:state.placed.length,
       buildCameraX:state.buildCameraX,humanReady:state.humanReady,soundOn:state.soundOn,
+      playerCount:state.playerCount,selectedCharacter:state.selectedCharacter,selectedRotation:state.selected?state.selected.rotation:null,
       botsPlaced:state.botBuild.filter(p=>p.placed).length,
-      placedDetails:state.placed.map(p=>({type:p.type,y:p.y,renderY:p.y+(p.type==='moving'&&state.mode==='race'?Math.sin(performance.now()*.0017+(p.phase||0))*54:0)})),
+      placedDetails:state.placed.map(p=>{const offset=p.type==='moving'&&state.mode==='race'?Math.sin(performance.now()*.0017+(p.phase||0))*54:0;return{type:p.type,rotation:p.rotation||0,x:p.x,y:p.y,renderX:p.x+((p.rotation||0)%2?offset:0),renderY:p.y+((p.rotation||0)%2?0:offset)}}),
       player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,dead:state.player.dead}:null}),
     restart,
   };
 
-  loadAssets().finally(()=>{
-    state.player=freshPlayer();resetBots();startBuild();loading.classList.add('hidden');
+  const initialize = () => {
+    if(!CHARACTERS.some(character=>character.id===state.selectedCharacter))state.selectedCharacter='dino';
+    state.player=freshPlayer();resetBots();state.mode='menu';loading.classList.add('hidden');
     requestAnimationFrame(now=>{state.lastTime=now;loop(now);});
-  });
+  };
+  loadAssets().then(initialize, initialize);
 })();
