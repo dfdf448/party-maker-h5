@@ -129,7 +129,7 @@
       x: 82, y: 480, prevX: 82, prevY: 480, w: 35, h: 49,
       vx: 0, vy: 0, grounded: false, coyote: 0,
       face: 1, dead: false, respawn: 0, invincible: 0,
-      finished: false, deaths: 0, anim: 0, safeX:82, safeY:480, fallGuards:0,
+      finished: false, deaths: 0, anim: 0, safeX:82, safeY:480, groundedTime:0, fallGuards:0, fallGuardCooldown:0,
     };
   }
 
@@ -186,6 +186,12 @@
 
   function isFullSolid(solid) {
     return !!solid.castle || ['platform','moving','conveyor'].includes(solid.type);
+  }
+
+  function supportFor(player, platforms) {
+    const foot=player.y+player.h;
+    return platforms.find(platform => Math.abs(foot-platform.y)<2 &&
+      player.x+player.w>platform.x+2 && player.x<platform.x+platform.w-2) || null;
   }
 
   function resolveSolidHorizontal(player, solids, previousX) {
@@ -451,15 +457,16 @@
   function respawn() {
     const p = state.player;
     p.x = p.safeX ?? 82; p.y = p.safeY ?? 472; p.prevX = p.x; p.prevY = p.y;
-    p.vx = 0; p.vy = 0; p.dead = false; p.invincible = 1.2;
+    p.vx = 0; p.vy = 0; p.dead = false; p.groundedTime=.2; p.fallGuardCooldown=.45; p.invincible = 1.2;
   }
 
   function recoverFromFall() {
     const p=state.player;
     p.x=p.safeX??82;p.y=p.safeY??472;p.prevX=p.x;p.prevY=p.y;
-    p.vx=0;p.vy=0;p.grounded=true;p.dead=false;p.invincible=1.05;p.fallGuards=(p.fallGuards||0)+1;
+    p.vx=0;p.vy=0;p.grounded=true;p.groundedTime=.2;p.dead=false;p.fallGuardCooldown=.45;p.invincible=1.05;p.fallGuards=(p.fallGuards||0)+1;
     state.toast={text:'已回到最近的平台',time:1.2};
     burst(p.x-state.cameraX+p.w/2,p.y+p.h/2,'#ffe029',12);
+    state.cameraX=clamp(p.x-130,0,WORLD_W-W);
   }
 
   function getPlatforms(time, animateMoving = state.mode === 'race') {
@@ -561,6 +568,7 @@
       return;
     }
     p.invincible = Math.max(0, p.invincible - dt);
+    p.fallGuardCooldown = Math.max(0, (p.fallGuardCooldown||0) - dt);
     p.prevX = p.x;
     p.prevY = p.y;
     p.anim += dt;
@@ -592,7 +600,12 @@
     p.y += movementY;
     resolveSolidVertical(p, platforms, p.prevY, movementY);
     p.x = Math.max(0, p.x);
-    if(p.grounded){p.safeX=p.x;p.safeY=p.y;}
+    const support=supportFor(p,platforms);
+    const safeLeft=support ? support.x+12 : 0;
+    const safeRight=support ? support.x+support.w-p.w-12 : -1;
+    const stableOnSupport=!!support && safeRight>=safeLeft && p.x>=safeLeft && p.x<=safeRight;
+    p.groundedTime=stableOnSupport ? (p.groundedTime||0)+dt : 0;
+    if(stableOnSupport && p.groundedTime>=.18){p.safeX=clamp(p.x,safeLeft,safeRight);p.safeY=p.y;}
 
     for (const piece of state.placed) {
       if (piece.type === 'conveyor' && rects(p, { x:piece.x-2, y:piece.y-2, w:piece.w+4, h:piece.h+4 })) {
@@ -625,7 +638,7 @@
       }
     }
 
-    if (p.y > H + 24) recoverFromFall();
+    if (p.y > H + 24 && p.fallGuardCooldown<=0) recoverFromFall();
     const goal=finishPlatform();
     if (p.x > goal.x + goal.w - 150 && p.y + p.h < goal.y + 32) {
       p.finished = true;
