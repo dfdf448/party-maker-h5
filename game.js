@@ -46,13 +46,15 @@
     { id:'pig', name:'珊瑚小猪', color:'#ff6574' },
     { id:'mouse', name:'飞行小鼠', color:'#53bfe8' },
     { id:'rabbit', name:'紫巾小兔', color:'#9a6bea' },
+    { id:'fox', name:'橙尾小狐', color:'#ff9138' },
+    { id:'robot', name:'圆头小机', color:'#ffc928' },
   ];
   const POSES = ['idle','run','jump','stunned'];
   const images = {};
   const imageSources = {};
   CHARACTERS.forEach(character => POSES.forEach(pose => {
     const key = `${character.id}-${pose}`;
-    imageSources[key] = `assets/characters/${key}.png?v=20260818c`;
+    imageSources[key] = `assets/characters/${key}.png?v=20260818d`;
   }));
 
   const PIECES = {
@@ -60,17 +62,29 @@
     spring: { name: '弹簧', color: '#ffcf1b', w: 46, h: 36 },
     spikes: { name: '地刺', color: '#ffcf1b', w: 70, h: 26 },
     moving: { name: '移动平台', color: '#19c8ed', w: 96, h: 22 },
+    conveyor: { name: '传送带', color: '#4c9fff', w: 92, h: 28 },
+    fan: { name: '传送风扇', color: '#5bd9ef', w: 56, h: 56 },
+    crusher: { name: '压砸机', color: '#ff5b50', w: 42, h: 84 },
+    laser: { name: '激光栅', color: '#ff4b65', w: 76, h: 28 },
+    bomb: { name: '定时炸弹', color: '#ffb52e', w: 42, h: 42 },
   };
 
-  const basePlatforms = [
-    { x: 0, y: 535, w: 255, h: 250, castle: true },
-    { x: 330, y: 505, w: 105, h: 22, orange: true },
-    { x: 475, y: 570, w: 185, h: 220, castle: true },
-    { x: 705, y: 510, w: 115, h: 22, orange: true },
-    { x: 875, y: 570, w: 180, h: 220, castle: true },
-    { x: 1090, y: 510, w: 95, h: 22, orange: true },
-    { x: 1200, y: 455, w: 88, h: 22, orange: true },
-    { x: 1320, y: 400, w: 320, h: 390, castle: true, finish: true },
+  const MAPS = [
+    { id:'sky', name:'天空城堡', colors:['#19b9d8','#9ae5e8','#d6f4e3'], style:'stone', platforms:[
+      { x:0,y:535,w:255,h:250,castle:true },{ x:330,y:505,w:105,h:22,orange:true },{ x:475,y:570,w:185,h:220,castle:true },
+      { x:705,y:510,w:115,h:22,orange:true },{ x:875,y:570,w:180,h:220,castle:true },{ x:1090,y:510,w:95,h:22,orange:true },
+      { x:1200,y:455,w:88,h:22,orange:true },{ x:1320,y:400,w:320,h:390,castle:true,finish:true },
+    ]},
+    { id:'canyon', name:'赤岩峡谷', colors:['#f07e62','#f6c27b','#ffe6b0'], style:'sand', platforms:[
+      { x:0,y:535,w:270,h:250,castle:true },{ x:300,y:470,w:130,h:22,orange:true },{ x:475,y:535,w:125,h:255,castle:true },
+      { x:650,y:450,w:110,h:22,orange:true },{ x:820,y:530,w:155,h:260,castle:true },{ x:1030,y:465,w:120,h:22,orange:true },
+      { x:1190,y:400,w:95,h:22,orange:true },{ x:1320,y:350,w:320,h:440,castle:true,finish:true },
+    ]},
+    { id:'factory', name:'霓虹工坊', colors:['#26345f','#40548b','#8ab6d9'], style:'steel', platforms:[
+      { x:0,y:535,w:220,h:250,castle:true },{ x:260,y:520,w:95,h:22,orange:true },{ x:400,y:460,w:110,h:22,orange:true },
+      { x:560,y:560,w:180,h:230,castle:true },{ x:780,y:475,w:100,h:22,orange:true },{ x:940,y:420,w:110,h:22,orange:true },
+      { x:1100,y:540,w:140,h:250,castle:true },{ x:1300,y:380,w:340,h:410,castle:true,finish:true },
+    ]},
   ];
 
   const state = {
@@ -103,6 +117,7 @@
     highScore: Number(storageGet('party-maker-high-score', '0') || 0),
     playerCount: clamp(Number(storageGet('party-maker-player-count', '4') || 4), 1, 4),
     selectedCharacter: storageGet('party-maker-character', 'dino'),
+    selectedMap: clamp(Number(storageGet('party-maker-map', '0') || 0), 0, MAPS.length - 1),
     player: null,
     bots: [],
   };
@@ -124,6 +139,10 @@
     const character = CHARACTERS.find(item => item.id === state.selectedCharacter);
     return character ? character.name : CHARACTERS[0].name;
   }
+
+  function currentMap() { return MAPS[state.selectedMap] || MAPS[0]; }
+  function currentPlatforms() { return currentMap().platforms; }
+  function finishPlatform() { return currentPlatforms().find(platform => platform.finish) || currentPlatforms()[currentPlatforms().length-1]; }
 
   function resetBots() {
     const names = ['团冬','肖亚兴','伦敦'];
@@ -227,14 +246,19 @@
   }
 
   function inventory() {
-    if (state.round === 1) return ['platform', 'spring', 'spikes'];
-    if (state.round === 2) return ['moving', 'platform', 'spikes'];
-    return ['spring', 'moving', 'platform'];
+    if (state.round === 1) return ['platform', 'spring', 'spikes', 'fan'];
+    if (state.round === 2) return ['moving', 'conveyor', 'crusher', 'laser'];
+    return ['spring', 'bomb', 'platform', 'fan'];
   }
 
   function pieceSize(type, rotation = 0) {
     const spec = PIECES[type];
     return rotation % 2 ? { w:spec.h, h:spec.w } : { w:spec.w, h:spec.h };
+  }
+
+  function rotationVector(rotation = 0, naturalDirection = 0) {
+    const vectors = [{ x:1, y:0 }, { x:0, y:1 }, { x:-1, y:0 }, { x:0, y:-1 }];
+    return vectors[(rotation + naturalDirection + 4) % 4];
   }
 
   function createPiece(type, x, y, rotation = 0, extra = {}) {
@@ -388,9 +412,10 @@
   }
 
   function getPlatforms(time, animateMoving = state.mode === 'race') {
-    const all = basePlatforms.map(p => ({ ...p }));
+    const all = currentPlatforms().map(p => ({ ...p }));
     for (const piece of state.placed) {
       if (piece.type === 'platform') all.push({ ...piece, orange: false });
+      if (piece.type === 'conveyor') all.push({ ...piece, conveyor: true, orange: false });
       if (piece.type === 'moving') {
         const offset = animateMoving ? Math.sin(time * 1.7 + (piece.phase || 0)) * 54 : 0;
         const horizontal = (piece.rotation || 0) % 2 === 1;
@@ -526,6 +551,21 @@
     }
 
     for (const piece of state.placed) {
+      if (piece.type === 'conveyor' && rects(p, piece)) {
+        const direction = rotationVector(piece.rotation || 0);
+        p.vx += direction.x * 240 * dt;
+        p.vy += direction.y * 240 * dt;
+        if (direction.y < 0) p.grounded = false;
+      }
+      if (piece.type === 'fan' && rects(p, piece)) {
+        const direction = rotationVector(piece.rotation || 0, 3);
+        p.vx += direction.x * 340 * dt;
+        p.vy += direction.y * 340 * dt;
+        if (direction.y < 0) p.grounded = false;
+      }
+      if (piece.type === 'crusher' && rects(p, piece)) death('被压砸机击中了！');
+      if (piece.type === 'laser' && Math.sin(time * 2.4 + (piece.phase || 0)) > -.15 && rects(p, piece)) death('碰到了激光栅！');
+      if (piece.type === 'bomb' && rects(p, piece)) death('引爆了定时炸弹！');
       if (piece.type === 'spikes' && rects(p, { x: piece.x + 6, y: piece.y + 5, w: piece.w - 12, h: piece.h - 4 })) {
         death('撞上了地刺！');
       }
@@ -542,7 +582,8 @@
     }
 
     if (p.y > H + 120) death('飞出了边界！');
-    if (p.x > 1500 && p.y + p.h < 430) {
+    const goal=finishPlatform();
+    if (p.x > goal.x + goal.w - 150 && p.y + p.h < goal.y + 32) {
       p.finished = true;
       finishRace(true);
     }
@@ -579,8 +620,9 @@
   }
 
   function drawSky(build = false) {
+    const sky=currentMap().colors;
     const g = ctx.createLinearGradient(0, 0, 0, H);
-    g.addColorStop(0, '#19b9d8'); g.addColorStop(.7, '#9ae5e8'); g.addColorStop(1, '#d6f4e3');
+    g.addColorStop(0, sky[0]); g.addColorStop(.7, sky[1]); g.addColorStop(1, sky[2]);
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
     ctx.save();
@@ -616,13 +658,14 @@
 
   function drawCastle(x, y, w, h) {
     ctx.save();
-    ctx.fillStyle = '#3d4b4e'; ctx.fillRect(x, y, w, h);
+    const style=currentMap().style;
+    ctx.fillStyle = style==='sand' ? '#8c654c' : style==='steel' ? '#26334d' : '#3d4b4e'; ctx.fillRect(x, y, w, h);
     const bw = 52, bh = 32;
     for (let row = 0; row < Math.ceil(h / bh); row++) {
       for (let col = -1; col < Math.ceil(w / bw) + 1; col++) {
         const ox = row % 2 ? bw / 2 : 0;
         const bx = x + col * bw + ox, by = y + row * bh;
-        ctx.fillStyle = (row + col) % 3 === 0 ? '#586466' : '#4a5759';
+        ctx.fillStyle = style==='sand' ? ((row+col)%3===0?'#b98b62':'#9b7355') : style==='steel' ? ((row+col)%3===0?'#465b7d':'#334766') : ((row + col) % 3 === 0 ? '#586466' : '#4a5759');
         roundedRect(bx + 2, by + 2, bw - 4, bh - 4, 5); ctx.fill();
         ctx.strokeStyle = 'rgba(19,30,33,.38)'; ctx.lineWidth = 2; ctx.stroke();
       }
@@ -646,10 +689,16 @@
       ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+anchors[0],cy+anchors[1]); ctx.stroke();
       ctx.fillStyle = '#ef4a4f'; ctx.fillRect(cx+anchors[0]-4,cy+anchors[1]-4,8,8);
     }
-    ctx.fillStyle = p.orange ? '#ff9d1c' : '#92999a';
+    ctx.fillStyle = p.conveyor ? '#438cf0' : (p.orange ? '#ff9d1c' : '#92999a');
     roundedRect(x, y, p.w, p.h, 7); ctx.fill();
     ctx.fillStyle = 'rgba(255,255,255,.28)'; roundedRect(x+5,y+4,p.w-10,5,3); ctx.fill();
     ctx.strokeStyle = p.orange ? '#dd7615' : '#737a7c'; ctx.lineWidth = 2; roundedRect(x,y,p.w,p.h,7); ctx.stroke();
+    if(p.conveyor){
+      ctx.save();ctx.translate(x+p.w/2,y+p.h/2);ctx.rotate((p.rotation||0)*Math.PI/2);
+      ctx.strokeStyle='rgba(255,255,255,.88)';ctx.lineWidth=3;ctx.lineCap='round';ctx.lineJoin='round';
+      for(let i=-1;i<=1;i++){const ax=i*21;ctx.beginPath();ctx.moveTo(ax-5,-6);ctx.lineTo(ax+3,0);ctx.lineTo(ax-5,6);ctx.stroke();}
+      ctx.restore();
+    }
     ctx.restore();
   }
 
@@ -669,6 +718,16 @@
     } else if (type === 'moving') {
       ctx.fillStyle='#ff9d1c';roundedRect(x,y,w,h,7);ctx.fill();
       ctx.fillStyle='rgba(255,255,255,.28)';roundedRect(x+5,y+4,w-10,5,3);ctx.fill();
+    } else if (type === 'fan') {
+      ctx.fillStyle='#47cce6';ctx.beginPath();ctx.arc(x+w/2,y+h/2,Math.min(w,h)*.42,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#0c738e';ctx.lineWidth=Math.max(2,w*.06);ctx.beginPath();ctx.arc(x+w/2,y+h/2,Math.min(w,h)*.12,0,Math.PI*2);ctx.stroke();
+      for(let i=0;i<4;i++){const a=i*Math.PI/2;ctx.beginPath();ctx.moveTo(x+w/2,y+h/2);ctx.quadraticCurveTo(x+w/2+Math.cos(a+.5)*w*.35,y+h/2+Math.sin(a+.5)*h*.35,x+w/2+Math.cos(a)*w*.4,y+h/2+Math.sin(a)*h*.4);ctx.stroke();}
+    } else if (type === 'crusher') {
+      ctx.fillStyle='#d83e4b';roundedRect(x,y,w,h,5);ctx.fill();ctx.fillStyle='#ffad32';ctx.fillRect(x+5,y+8,w-10,7);ctx.fillRect(x+5,y+h-16,w-10,7);ctx.fillStyle='#782b3b';ctx.fillRect(x+w*.35,y+15,w*.3,h-31);
+    } else if (type === 'laser') {
+      ctx.fillStyle='#782b4b';roundedRect(x,y,w,h,5);ctx.fill();ctx.fillStyle='#ff4664';ctx.fillRect(x+6,y+h/2-3,w-12,6);ctx.fillStyle='#fff3f5';ctx.fillRect(x+w*.2,y+h/2-1,w*.6,2);
+    } else if (type === 'bomb') {
+      ctx.fillStyle='#2c3850';ctx.beginPath();ctx.arc(x+w/2,y+h/2,w*.37,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#ffb52e';ctx.lineWidth=Math.max(2,w*.07);ctx.stroke();ctx.fillStyle='#ffb52e';ctx.fillRect(x+w*.62,y+w*.05,w*.12,w*.2);ctx.strokeStyle='#ff7a28';ctx.beginPath();ctx.moveTo(x+w*.68,y+w*.06);ctx.quadraticCurveTo(x+w*.9,y-w*.1,x+w*.85,y-w*.25);ctx.stroke();
     }
   }
 
@@ -696,7 +755,7 @@
   function drawWorld(cam, build, now) {
     drawSky(build);
     for (const p of getPlatforms(now, !build)) drawPlatform(p, cam, now);
-    for (const p of state.placed) if (p.type === 'spikes' || p.type === 'spring') drawPiece(p, cam);
+    for (const p of state.placed) if (!['platform','moving','conveyor'].includes(p.type)) drawPiece(p, cam);
     if (!build) {
       drawFinish(cam);
       drawBots(cam, now);
@@ -705,12 +764,13 @@
   }
 
   function drawFinish(cam) {
-    const x = 1488 - cam;
+    const goal=finishPlatform(),x = goal.x + goal.w - 150 - cam;
     if (x < -80 || x > W + 80) return;
     ctx.save();
-    ctx.fillStyle = '#eef4ef'; ctx.fillRect(x, 305, 8, 95);
-    ctx.fillStyle = '#ff3f54'; ctx.beginPath(); ctx.moveTo(x+8,310); ctx.lineTo(x+62,326); ctx.lineTo(x+8,344); ctx.closePath(); ctx.fill();
-    text('终点', x+31, 327, 14, '#fff');
+    const poleY=goal.y-95;
+    ctx.fillStyle = '#eef4ef'; ctx.fillRect(x, poleY, 8, 95);
+    ctx.fillStyle = '#ff3f54'; ctx.beginPath(); ctx.moveTo(x+8,poleY+5); ctx.lineTo(x+62,poleY+21); ctx.lineTo(x+8,poleY+39); ctx.closePath(); ctx.fill();
+    text('终点', x+31, poleY+22, 14, '#fff');
     ctx.restore();
   }
 
@@ -844,7 +904,7 @@
     ctx.fillStyle='rgba(33,52,64,.92)';ctx.fillRect(0,615,W,145);
     text(state.humanReady?'已确认 · 正在等待其他玩家':'拖到网格里 · 所有人的机关都会保留',W/2,633,12,'#d8edf0');
     const cards=inventory();
-    cards.forEach((type,i)=>{ctx.save();ctx.globalAlpha=state.humanReady ? .46 : 1;drawCard(type,12+i*136,650,124,96);ctx.restore();});
+    cards.forEach((type,i)=>{ctx.save();ctx.globalAlpha=state.humanReady ? .46 : 1;drawCard(type,12+i*102,650,96,96);ctx.restore();});
     drawHud();
   }
 
@@ -905,31 +965,34 @@
 
   function drawMenu() {
     drawSky(false);
-    ctx.fillStyle='rgba(11,38,50,.9)';roundedRect(24,28,372,108,22);ctx.fill();
+    ctx.fillStyle='rgba(11,38,50,.9)';roundedRect(24,20,372,100,22);ctx.fill();
     text('派对制造',W/2,67,35,'#ffe021');
-    text('制造机关 · 冲向终点',W/2,109,14,'#c9f4f2');
-    ctx.fillStyle='rgba(255,255,255,.92)';roundedRect(16,154,388,190,18);ctx.fill();
-    text('选择你的角色',W/2,174,16,'#183b49');
+    text('制造机关 · 冲向终点',W/2,100,14,'#c9f4f2');
+    ctx.fillStyle='rgba(255,255,255,.92)';roundedRect(12,135,396,235,18);ctx.fill();
+    text('选择你的角色模型',W/2,153,16,'#183b49');
     CHARACTERS.forEach((character,i)=>{
-      const x=20+i*98,selected=state.selectedCharacter===character.id;
-      ctx.fillStyle=selected?'#e8fff2':'#e9f1f3';roundedRect(x,190,88,138,13);ctx.fill();
-      if(selected){ctx.strokeStyle='#22c55e';ctx.lineWidth=4;roundedRect(x,190,88,138,13);ctx.stroke();}
-      drawDino(characterImage(character.id,'idle'),x+6,200,76,86,1);
-      text(character.name,x+44,300,11,'#163643');
-      if(selected){ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(x+74,204,10,0,Math.PI*2);ctx.fill();text('✓',x+74,204,10,'#fff');}
+      const col=i%3,row=Math.floor(i/3),x=25+col*124,y=168+row*96,selected=state.selectedCharacter===character.id;
+      ctx.fillStyle=selected?'#e8fff2':'#e9f1f3';roundedRect(x,y,112,86,13);ctx.fill();
+      if(selected){ctx.strokeStyle='#22c55e';ctx.lineWidth=4;roundedRect(x,y,112,86,13);ctx.stroke();}
+      drawDino(characterImage(character.id,'idle'),x+4,y+3,62,70,1);
+      text(character.name,x+78,y+45,11,'#163643');
+      if(selected){ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(x+99,y+14,9,0,Math.PI*2);ctx.fill();text('✓',x+99,y+14,9,'#fff');}
     });
-    ctx.fillStyle='rgba(11,38,50,.86)';roundedRect(28,366,364,128,18);ctx.fill();
-    text('选择参赛人数',W/2,389,17,'#fff');
+    ctx.fillStyle='rgba(11,38,50,.86)';roundedRect(20,382,380,112,18);ctx.fill();
+    text('选择参赛人数',W/2,401,17,'#fff');
     for(let count=1;count<=4;count++){
       const x=36+(count-1)*88,selected=state.playerCount===count;
-      ctx.fillStyle=selected?'#ffe021':'rgba(255,255,255,.16)';roundedRect(x,414,70,54,12);ctx.fill();
-      text(`${count}人`,x+35,441,18,selected?'#173744':'#fff');
+      ctx.fillStyle=selected?'#ffe021':'rgba(255,255,255,.16)';roundedRect(x,424,70,46,12);ctx.fill();
+      text(`${count}人`,x+35,447,17,selected?'#173744':'#fff');
     }
     const botCount=Math.max(0,state.playerCount-1);
-    text(botCount?`你 + ${botCount}名不同角色的人机`:'单人练习模式',W/2,482,12,'#bde8ea');
-    ctx.fillStyle='#23c94d';roundedRect(60,544,300,72,15);ctx.fill();ctx.strokeStyle='#0b7f28';ctx.lineWidth=4;ctx.stroke();
-    text('开始制造',W/2,580,25,'#fff');
-    text(`最高纪录  ★ ${state.highScore}`,W/2,652,14,'#173744');
+    text(botCount?`你 + ${botCount}名不同角色的人机`:'单人练习模式',W/2,484,12,'#bde8ea');
+    ctx.fillStyle='rgba(11,38,50,.86)';roundedRect(20,505,380,55,16);ctx.fill();
+    text('地图',47,532,14,'#fff','left');
+    MAPS.forEach((map,i)=>{const x=88+i*98,selected=state.selectedMap===i;ctx.fillStyle=selected?'#ffe021':'rgba(255,255,255,.16)';roundedRect(x,518,87,30,9);ctx.fill();text(map.name,x+43,533,11,selected?'#173744':'#fff');});
+    ctx.fillStyle='#23c94d';roundedRect(60,580,300,66,15);ctx.fill();ctx.strokeStyle='#0b7f28';ctx.lineWidth=4;ctx.stroke();
+    text('开始制造',W/2,613,24,'#fff');
+    text(`最高纪录  ★ ${state.highScore}`,W/2,683,14,'#173744');
     ctx.fillStyle='rgba(8,29,38,.75)';roundedRect(W-70,12,58,37,12);ctx.fill();
     text(state.soundOn?'声':'静',W-41,31,13,'#fff');
   }
@@ -960,8 +1023,8 @@
 
   function cardAt(x,y) {
     if(y<645) return null;
-    const i=Math.floor((x-8)/136);
-    return i>=0&&i<3?inventory()[i]:null;
+    const i=Math.floor((x-12)/102);
+    return i>=0&&i<4?inventory()[i]:null;
   }
 
   function validPiece(piece,ignore=null) {
@@ -993,9 +1056,10 @@
     const p=pointFromEvent(e);
     if(state.mode==='menu'){
       if(p.x>=W-70&&p.y<=55){toggleSound();return;}
-      if(p.y>=188&&p.y<=332){const i=Math.floor((p.x-16)/98);if(i>=0&&i<CHARACTERS.length){state.selectedCharacter=CHARACTERS[i].id;resetBots();sound('click');return;}}
+      if(p.y>=165&&p.y<=350){const col=Math.floor((p.x-25)/124),row=Math.floor((p.y-168)/96),i=row*3+col;if(col>=0&&col<3&&row>=0&&row<2&&i>=0&&i<CHARACTERS.length){state.selectedCharacter=CHARACTERS[i].id;resetBots();sound('click');return;}}
       if(p.y>=408&&p.y<=474){const count=Math.floor((p.x-30)/88)+1;if(count>=1&&count<=4){state.playerCount=count;resetBots();sound('click');return;}}
-      if(p.x>=55&&p.x<=365&&p.y>=535&&p.y<=625){startGame();return;}
+      if(p.y>=512&&p.y<=558&&p.x>=80&&p.x<=405){const i=Math.floor((p.x-88)/98);if(i>=0&&i<MAPS.length){state.selectedMap=i;storageSet('party-maker-map',String(i));sound('click');return;}}
+      if(p.x>=55&&p.x<=365&&p.y>=570&&p.y<=650){startGame();return;}
     } else if(state.mode==='build'){
       if(p.x>=W-70&&p.y<=55){toggleSound();return;}
       if(!state.humanReady&&state.selected&&p.x>=207&&p.x<=264&&p.y>=68&&p.y<=122){rotateSelected();return;}
@@ -1068,7 +1132,8 @@
   window.__partyGame = {
     getState: () => ({mode:state.mode,round:state.round,score:state.score,placed:state.placed.length,
       buildCameraX:state.buildCameraX,humanReady:state.humanReady,soundOn:state.soundOn,
-      playerCount:state.playerCount,selectedCharacter:state.selectedCharacter,selectedRotation:state.selected?state.selected.rotation:null,
+      playerCount:state.playerCount,selectedCharacter:state.selectedCharacter,selectedMap:state.selectedMap,
+      availableCharacters:CHARACTERS.map(character=>character.id),selectedRotation:state.selected?state.selected.rotation:null,
       botsPlaced:state.botBuild.filter(p=>p.placed).length,
       placedDetails:state.placed.map(p=>{const offset=p.type==='moving'&&state.mode==='race'?Math.sin(performance.now()*.0017+(p.phase||0))*54:0;return{type:p.type,rotation:p.rotation||0,x:p.x,y:p.y,renderX:p.x+((p.rotation||0)%2?offset:0),renderY:p.y+((p.rotation||0)%2?0:offset)}}),
       player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,dead:state.player.dead}:null}),
