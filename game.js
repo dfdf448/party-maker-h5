@@ -129,7 +129,7 @@
       x: 82, y: 480, prevX: 82, prevY: 480, w: 35, h: 49,
       vx: 0, vy: 0, grounded: false, coyote: 0,
       face: 1, dead: false, respawn: 0, invincible: 0,
-      finished: false, deaths: 0, anim: 0,
+      finished: false, deaths: 0, anim: 0, safeX:82, safeY:480, fallGuards:0,
     };
   }
 
@@ -377,9 +377,8 @@
     if (state.mode !== 'build') return;
     if (!state.selected) {
       const type = inventory()[0];
-      const spec = PIECES[type];
-      state.selected = { type, x: state.buildCameraX + 250, y: 430, w: spec.w, h: spec.h, rotation:0 };
-      state.placed.push({ ...state.selected });
+      const fallback=findSafePiece(type);
+      if(fallback){state.selected=fallback;state.placed.push(fallback);}
     }
     state.humanReady = true;
     const remaining = state.playerCount - 1;
@@ -451,8 +450,16 @@
 
   function respawn() {
     const p = state.player;
-    p.x = 82; p.y = 472; p.prevX = p.x; p.prevY = p.y;
+    p.x = p.safeX ?? 82; p.y = p.safeY ?? 472; p.prevX = p.x; p.prevY = p.y;
     p.vx = 0; p.vy = 0; p.dead = false; p.invincible = 1.2;
+  }
+
+  function recoverFromFall() {
+    const p=state.player;
+    p.x=p.safeX??82;p.y=p.safeY??472;p.prevX=p.x;p.prevY=p.y;
+    p.vx=0;p.vy=0;p.grounded=true;p.dead=false;p.invincible=1.05;p.fallGuards=(p.fallGuards||0)+1;
+    state.toast={text:'已回到最近的平台',time:1.2};
+    burst(p.x-state.cameraX+p.w/2,p.y+p.h/2,'#ffe029',12);
   }
 
   function getPlatforms(time, animateMoving = state.mode === 'race') {
@@ -585,6 +592,7 @@
     p.y += movementY;
     resolveSolidVertical(p, platforms, p.prevY, movementY);
     p.x = Math.max(0, p.x);
+    if(p.grounded){p.safeX=p.x;p.safeY=p.y;}
 
     for (const piece of state.placed) {
       if (piece.type === 'conveyor' && rects(p, { x:piece.x-2, y:piece.y-2, w:piece.w+4, h:piece.h+4 })) {
@@ -617,7 +625,7 @@
       }
     }
 
-    if (p.y > H + 120) death('飞出了边界！');
+    if (p.y > H + 24) recoverFromFall();
     const goal=finishPlatform();
     if (p.x > goal.x + goal.w - 150 && p.y + p.h < goal.y + 32) {
       p.finished = true;
@@ -1087,7 +1095,22 @@
   function validPiece(piece,ignore=null) {
     if(piece.y<135||piece.y+piece.h>600)return false;
     if(piece.x<260||piece.x+piece.w>WORLD_W-180)return false;
+    if(currentPlatforms().some(platform=>rects(piece,platform)))return false;
     return !state.placed.some(other=>other!==ignore&&rects({x:piece.x-12,y:piece.y-12,w:piece.w+24,h:piece.h+24},other));
+  }
+
+  function findSafePiece(type) {
+    const candidates=[
+      {x:state.buildCameraX+250,y:430},
+      {x:state.buildCameraX+90,y:180},
+      {x:280,y:160},
+      {x:260,y:135},
+    ];
+    for(const candidate of candidates){
+      const piece=createPiece(type,Math.round(candidate.x/14)*14,Math.round(candidate.y/14)*14,0,{phase:Math.random()*3});
+      if(validPiece(piece))return piece;
+    }
+    return null;
   }
 
   function commitPlacement(type,x,y) {
@@ -1198,7 +1221,7 @@
       selectedRotation:state.selected?state.selected.rotation:null,
       botsPlaced:state.botBuild.filter(p=>p.placed).length,
       placedDetails:state.placed.map(p=>{const offset=p.type==='moving'&&state.mode==='race'?Math.sin(performance.now()*.0017+(p.phase||0))*54:0;return{type:p.type,rotation:p.rotation||0,x:p.x,y:p.y,renderX:p.x+((p.rotation||0)%2?offset:0),renderY:p.y+((p.rotation||0)%2?0:offset)}}),
-      player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,grounded:state.player.grounded,dead:state.player.dead}:null}),
+      player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,grounded:state.player.grounded,dead:state.player.dead,fallGuards:state.player.fallGuards}:null}),
     restart,
   };
 
