@@ -51,10 +51,12 @@
   ];
   const POSES = ['idle','run','jump','stunned'];
   const images = {};
+  const assetStatus = { loaded:0, failed:0 };
   const imageSources = {};
   CHARACTERS.forEach(character => POSES.forEach(pose => {
     const key = `${character.id}-${pose}`;
-    imageSources[key] = `assets/characters/${key}.png?v=20260818d`;
+    const cacheVersion = window.location.protocol === 'file:' ? '' : '?v=20260818e';
+    imageSources[key] = `assets/characters/${key}.png${cacheVersion}`;
   }));
 
   const PIECES = {
@@ -124,7 +126,7 @@
 
   function freshPlayer() {
     return {
-      x: 82, y: 480, prevY: 480, w: 35, h: 49,
+      x: 82, y: 480, prevX: 82, prevY: 480, w: 35, h: 49,
       vx: 0, vy: 0, grounded: false, coyote: 0,
       face: 1, dead: false, respawn: 0, invincible: 0,
       finished: false, deaths: 0, anim: 0,
@@ -132,7 +134,7 @@
   }
 
   function characterImage(characterId, pose = 'idle') {
-    return images[`${characterId}-${pose}`] || images['dino-idle'];
+    return images[`${characterId}-${pose}`] || images[`${characterId}-idle`];
   }
 
   function selectedCharacterName() {
@@ -158,17 +160,20 @@
     return Promise.all(Object.keys(imageSources).map(key => new Promise(resolve => {
       const src = imageSources[key];
       const img = new Image();
-      let finished = false;
-      const done = loaded => {
-        if (finished) return;
-        finished = true;
-        if (loaded) images[key] = img;
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timeout);
         resolve();
       };
-      const timeout = setTimeout(() => done(false), 5000);
-      img.onload = () => done(true);
-      img.onerror = () => done(false);
+      const timeout = setTimeout(settle, 1800);
+      img.onload = () => {
+        if (!images[key]) assetStatus.loaded += 1;
+        images[key] = img;
+        settle();
+      };
+      img.onerror = () => { assetStatus.failed += 1; settle(); };
       img.src = src;
     })));
   }
@@ -177,6 +182,45 @@
   function lerp(a, b, t) { return a + (b - a) * t; }
   function rects(a, b) {
     return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  function isFullSolid(solid) {
+    return !!solid.castle || ['platform','moving','conveyor'].includes(solid.type);
+  }
+
+  function resolveSolidHorizontal(player, solids, previousX) {
+    for (const solid of solids) {
+      if (!rects(player, solid)) continue;
+      const previousRight = previousX + player.w;
+      if (player.vx > 0 && previousRight <= solid.x + 3) player.x = solid.x - player.w;
+      else if (player.vx < 0 && previousX >= solid.x + solid.w - 3) player.x = solid.x + solid.w;
+      else {
+        const pushLeft = player.x + player.w - solid.x;
+        const pushRight = solid.x + solid.w - player.x;
+        player.x += pushLeft < pushRight ? -pushLeft : pushRight;
+      }
+      player.vx = 0;
+    }
+  }
+
+  function resolveSolidVertical(player, solids, previousY, movementY) {
+    player.grounded = false;
+    for (const solid of solids) {
+      const overlapsX = player.x + player.w > solid.x + 1 && player.x < solid.x + solid.w - 1;
+      if (!overlapsX) continue;
+      const previousBottom = previousY + player.h;
+      const currentBottom = player.y + player.h;
+      const crossedTop = movementY >= 0 && previousBottom <= solid.y + 2 && currentBottom >= solid.y;
+      const crossedBottom = movementY < 0 && previousY >= solid.y + solid.h - 2 && player.y <= solid.y + solid.h;
+      if (crossedTop || (movementY >= 0 && rects(player, solid))) {
+        player.y = solid.y - player.h;
+        player.vy = 0;
+        player.grounded = true;
+      } else if (isFullSolid(solid) && (crossedBottom || (movementY < 0 && rects(player, solid)))) {
+        player.y = solid.y + solid.h;
+        player.vy = 0;
+      }
+    }
   }
   function roundedRect(x, y, w, h, r) {
     ctx.beginPath();
@@ -407,7 +451,7 @@
 
   function respawn() {
     const p = state.player;
-    p.x = 82; p.y = 472; p.prevY = p.y;
+    p.x = 82; p.y = 472; p.prevX = p.x; p.prevY = p.y;
     p.vx = 0; p.vy = 0; p.dead = false; p.invincible = 1.2;
   }
 
@@ -510,6 +554,7 @@
       return;
     }
     p.invincible = Math.max(0, p.invincible - dt);
+    p.prevX = p.x;
     p.prevY = p.y;
     p.anim += dt;
 
@@ -533,25 +578,16 @@
       sound('jump');
     }
     p.vy += CONFIG.gravity * dt;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.x = Math.max(0, p.x);
-    p.grounded = false;
-
     const platforms = getPlatforms(time);
-    for (const plat of platforms) {
-      const prevBottom = p.prevY + p.h;
-      const nowBottom = p.y + p.h;
-      const overlapsX = p.x + p.w > plat.x + 4 && p.x < plat.x + plat.w - 4;
-      if (overlapsX && p.vy >= 0 && prevBottom <= plat.y + 8 && nowBottom >= plat.y) {
-        p.y = plat.y - p.h;
-        p.vy = 0;
-        p.grounded = true;
-      }
-    }
+    p.x += p.vx * dt;
+    resolveSolidHorizontal(p, platforms.filter(isFullSolid), p.prevX);
+    const movementY = p.vy * dt;
+    p.y += movementY;
+    resolveSolidVertical(p, platforms, p.prevY, movementY);
+    p.x = Math.max(0, p.x);
 
     for (const piece of state.placed) {
-      if (piece.type === 'conveyor' && rects(p, piece)) {
+      if (piece.type === 'conveyor' && rects(p, { x:piece.x-2, y:piece.y-2, w:piece.w+4, h:piece.h+4 })) {
         const direction = rotationVector(piece.rotation || 0);
         p.vx += direction.x * 240 * dt;
         p.vy += direction.y * 240 * dt;
@@ -774,8 +810,29 @@
     ctx.restore();
   }
 
-  function drawDino(img, x, y, w, h, face = 1, alpha = 1) {
-    if (!img) return;
+  function drawFallbackCharacter(characterId, x, y, w, h, face = 1, alpha = 1, pose = 'idle') {
+    const character = CHARACTERS.find(item => item.id === characterId) || CHARACTERS[0];
+    ctx.save();ctx.globalAlpha=alpha;ctx.translate(x+(face<0?w:0),y);ctx.scale((face<0?-1:1)*w/64,h/72);
+    const jump = pose === 'jump' ? -3 : 0;
+    if(characterId==='robot'){
+      ctx.fillStyle=character.color;roundedRect(16,19+jump,36,29,10);ctx.fill();roundedRect(20,45+jump,28,20,8);ctx.fill();
+      ctx.fillStyle='#163e58';roundedRect(21,25+jump,26,16,7);ctx.fill();ctx.fillStyle='#7ff7ff';ctx.beginPath();ctx.arc(29,33+jump,2.5,0,Math.PI*2);ctx.arc(40,33+jump,2.5,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#ea7b22';ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(22,49+jump);ctx.lineTo(10,55+jump);ctx.moveTo(46,49+jump);ctx.lineTo(56,55+jump);ctx.stroke();
+    }else{
+      ctx.fillStyle=character.color;ctx.beginPath();ctx.ellipse(31,49+jump,17,19,0,0,Math.PI*2);ctx.fill();ctx.beginPath();ctx.ellipse(36,27+jump,20,18,0,0,Math.PI*2);ctx.fill();
+      if(characterId==='rabbit'){ctx.beginPath();ctx.ellipse(27,8+jump,5,17,-.18,0,Math.PI*2);ctx.ellipse(42,7+jump,5,17,.18,0,Math.PI*2);ctx.fill();}
+      else if(characterId==='mouse'){ctx.beginPath();ctx.arc(20,18+jump,10,0,Math.PI*2);ctx.arc(49,18+jump,10,0,Math.PI*2);ctx.fill();}
+      else if(characterId==='fox'){ctx.beginPath();ctx.moveTo(18,19+jump);ctx.lineTo(23,2+jump);ctx.lineTo(32,16+jump);ctx.moveTo(41,15+jump);ctx.lineTo(51,3+jump);ctx.lineTo(54,22+jump);ctx.fill();ctx.beginPath();ctx.ellipse(10,51+jump,12,20,-.8,0,Math.PI*2);ctx.fill();}
+      else if(characterId==='pig'){ctx.beginPath();ctx.moveTo(21,15+jump);ctx.lineTo(17,4+jump);ctx.lineTo(31,14+jump);ctx.fill();ctx.fillStyle='#ff9bab';ctx.beginPath();ctx.ellipse(53,31+jump,10,7,0,0,Math.PI*2);ctx.fill();}
+      else {ctx.beginPath();ctx.moveTo(15,44+jump);ctx.lineTo(2,54+jump);ctx.lineTo(20,57+jump);ctx.fill();ctx.fillStyle='#33404e';for(let i=0;i<3;i++){ctx.beginPath();ctx.moveTo(17+i*5,18+i*8+jump);ctx.lineTo(10+i*5,22+i*8+jump);ctx.lineTo(18+i*5,26+i*8+jump);ctx.fill();}}
+      ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(39,24+jump,6,0,Math.PI*2);ctx.fill();ctx.fillStyle='#17323f';ctx.beginPath();ctx.arc(41,25+jump,2.6,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle=character.color;ctx.lineWidth=6;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(23,57+jump);ctx.lineTo(pose==='run'?13:20,68);ctx.moveTo(40,57+jump);ctx.lineTo(pose==='run'?52:43,68);ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawDino(img, x, y, w, h, face = 1, alpha = 1, characterId = 'dino', pose = 'idle') {
+    if (!img || !img.complete || !img.naturalWidth) return drawFallbackCharacter(characterId,x,y,w,h,face,alpha,pose);
     ctx.save(); ctx.globalAlpha = alpha;
     ctx.translate(x + (face < 0 ? w : 0), y);
     ctx.scale(face < 0 ? -1 : 1, 1);
@@ -790,7 +847,7 @@
     const pose = !p.grounded ? 'jump' : Math.abs(p.vx) > 30 ? 'run' : 'idle';
     const img = characterImage(state.selectedCharacter,pose);
     const bob = p.grounded && Math.abs(p.vx)>30 ? Math.sin(p.anim*15)*2 : 0;
-    drawDino(img, sx, sy+bob, 76, 84, p.face, p.invincible > 0 && Math.floor(p.invincible*12)%2 ? .35 : 1);
+    drawDino(img, sx, sy+bob, 76, 84, p.face, p.invincible > 0 && Math.floor(p.invincible*12)%2 ? .35 : 1,state.selectedCharacter,pose);
     ctx.fillStyle = '#ffe326'; ctx.beginPath(); ctx.moveTo(sx+38,sy-8);ctx.lineTo(sx+26,sy-30);ctx.lineTo(sx+50,sy-30);ctx.closePath();ctx.fill();
   }
 
@@ -799,7 +856,7 @@
     ctx.save();
     ctx.fillStyle = 'rgba(13,40,48,.78)'; roundedRect(54,392,92,28,10); ctx.fill();
     text(selectedCharacterName(),100,406,12,'#fff');
-    drawDino(characterImage(state.selectedCharacter,'idle'),52,426+bob,92,102,1,1);
+    drawDino(characterImage(state.selectedCharacter,'idle'),52,426+bob,92,102,1,1,state.selectedCharacter,'idle');
     ctx.fillStyle='#ffe326';ctx.beginPath();ctx.moveTo(98,423+bob);ctx.lineTo(84,399+bob);ctx.lineTo(112,399+bob);ctx.closePath();ctx.fill();
     ctx.restore();
   }
@@ -812,7 +869,7 @@
       const ground = bot.x < 255 ? 535 : bot.x < 475 ? 505 : bot.x < 660 ? 570 : bot.x < 875 ? 510 : bot.x < 1055 ? 570 : bot.x < 1320 ? 490 : 400;
       const hop = Math.max(0, Math.sin(now*2.6 + bot.seed))*42;
       ctx.save();ctx.globalAlpha=.88;
-      drawDino(characterImage(bot.charId,'run'),x-20,ground-84-hop,76,84,1,1);
+      drawDino(characterImage(bot.charId,'run'),x-20,ground-84-hop,76,84,1,1,bot.charId,'run');
       ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=4;text(bot.name,x+18,ground-92-hop,10,bot.color);ctx.restore();
     }
   }
@@ -838,7 +895,7 @@
     for(let i=0;i<participants.length;i++) {
       const participant=participants[i];
       const y=92+i*37;
-      drawDino(characterImage(participant.charId,'idle'),7,y-2,38,38,1);
+      drawDino(characterImage(participant.charId,'idle'),7,y-2,38,38,1,1,participant.charId,'idle');
       let badge='…', badgeColor='#ff3c52';
       if(i===0&&state.mode==='build'&&state.humanReady){badge='✓';badgeColor='#25c94c';}
       if(i>0&&state.mode==='build'){
@@ -974,7 +1031,7 @@
       const col=i%3,row=Math.floor(i/3),x=25+col*124,y=168+row*96,selected=state.selectedCharacter===character.id;
       ctx.fillStyle=selected?'#e8fff2':'#e9f1f3';roundedRect(x,y,112,86,13);ctx.fill();
       if(selected){ctx.strokeStyle='#22c55e';ctx.lineWidth=4;roundedRect(x,y,112,86,13);ctx.stroke();}
-      drawDino(characterImage(character.id,'idle'),x+4,y+3,62,70,1);
+      drawDino(characterImage(character.id,'idle'),x+4,y+3,62,70,1,1,character.id,'idle');
       text(character.name,x+78,y+45,11,'#163643');
       if(selected){ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(x+99,y+14,9,0,Math.PI*2);ctx.fill();text('✓',x+99,y+14,9,'#fff');}
     });
@@ -1000,7 +1057,7 @@
   function drawComplete() {
     drawSky(false);
     drawCastle(34,395,352,365);
-    drawDino(characterImage(state.selectedCharacter,'idle'),125,210,170,190,1);
+    drawDino(characterImage(state.selectedCharacter,'idle'),125,210,170,190,1,1,state.selectedCharacter,'idle');
     ctx.fillStyle='rgba(13,40,48,.92)';roundedRect(34,40,352,152,22);ctx.fill();
     text('派对完成！',W/2,79,32,'#ffe021');text(`总得分  ${state.score}`,W/2,127,25);text(`最高纪录  ${state.highScore}`,W/2,163,14,'#b8e8ec');
     ctx.fillStyle='#24c643';roundedRect(78,620,264,66,12);ctx.fill();ctx.strokeStyle='#0b7c25';ctx.lineWidth=4;ctx.stroke();text('再玩一局',W/2,653,24);
@@ -1115,6 +1172,10 @@
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
   window.addEventListener('keydown',e=>{
     if(['ArrowLeft','ArrowRight','ArrowUp','Space','KeyA','KeyD','KeyW','KeyR'].includes(e.code))e.preventDefault();
+    if(e.code==='Space'&&state.mode==='build'){
+      if(!e.repeat)rotateSelected();
+      return;
+    }
     if(!state.keys.has(e.code)&&(e.code==='ArrowUp'||e.code==='Space'||e.code==='KeyW'))queueJump();
     if(e.code==='KeyR'&&state.mode==='race')death('选择了快速重生');
     if(e.code==='Enter'&&state.mode==='menu')startGame();
@@ -1133,10 +1194,11 @@
     getState: () => ({mode:state.mode,round:state.round,score:state.score,placed:state.placed.length,
       buildCameraX:state.buildCameraX,humanReady:state.humanReady,soundOn:state.soundOn,
       playerCount:state.playerCount,selectedCharacter:state.selectedCharacter,selectedMap:state.selectedMap,
-      availableCharacters:CHARACTERS.map(character=>character.id),selectedRotation:state.selected?state.selected.rotation:null,
+      availableCharacters:CHARACTERS.map(character=>character.id),assetsLoaded:assetStatus.loaded,assetsFailed:assetStatus.failed,
+      selectedRotation:state.selected?state.selected.rotation:null,
       botsPlaced:state.botBuild.filter(p=>p.placed).length,
       placedDetails:state.placed.map(p=>{const offset=p.type==='moving'&&state.mode==='race'?Math.sin(performance.now()*.0017+(p.phase||0))*54:0;return{type:p.type,rotation:p.rotation||0,x:p.x,y:p.y,renderX:p.x+((p.rotation||0)%2?offset:0),renderY:p.y+((p.rotation||0)%2?0:offset)}}),
-      player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,dead:state.player.dead}:null}),
+      player:state.player?{x:state.player.x,y:state.player.y,vx:state.player.vx,vy:state.player.vy,grounded:state.player.grounded,dead:state.player.dead}:null}),
     restart,
   };
 
